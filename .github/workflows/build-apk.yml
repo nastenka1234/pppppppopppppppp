@@ -1,0 +1,97 @@
+name: Build APK
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
+      - name: Fetch Vazirmatn font
+        run: |
+          set -e
+          mkdir -p assets/fonts /tmp/vz
+          if [ ! -f assets/fonts/Vazirmatn-Regular.ttf ]; then
+            (cd /tmp/vz && npm pack vazirmatn@33.0.3 --silent && tar -xzf vazirmatn-*.tgz)
+            for w in Regular Medium Bold ExtraBold; do
+              f=$(find /tmp/vz/package -name "Vazirmatn-$w.ttf" | head -1)
+              test -n "$f" || { echo "::error::Vazirmatn-$w.ttf not found"; exit 1; }
+              cp "$f" "assets/fonts/Vazirmatn-$w.ttf"
+            done
+          fi
+          ls -la assets/fonts
+      - name: Create Android shell
+        run: flutter create --platforms=android --org com.jojo --project-name study_companion shell
+      - name: Overlay sources
+        run: |
+          cp pubspec.yaml shell/pubspec.yaml
+          cat >> shell/pubspec.yaml << 'EOF'
+
+          dependency_overrides:
+            wakelock_plus: 1.2.8
+            package_info_plus: 8.0.2
+          EOF
+          rm -rf shell/lib shell/assets shell/test
+          cp -r lib shell/lib
+          cp -r assets shell/assets
+          python3 tool/patch_android.py shell
+      - name: Force compileSdk
+        run: |
+          if [ -f shell/android/app/build.gradle.kts ]; then
+            sed -i 's/compileSdk = .*/compileSdk = 34/' shell/android/app/build.gradle.kts || true
+          fi
+          if [ -f shell/android/app/build.gradle ]; then
+            sed -i 's/compileSdkVersion .*/compileSdkVersion 34/' shell/android/app/build.gradle || true
+            sed -i 's/compileSdk .*/compileSdk 34/' shell/android/app/build.gradle || true
+          fi
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::KEYSTORE_BASE64 تنظیم نشده؛ APK با کلید debug امضا می‌شود."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > shell/android/app/upload-keystore.jks
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=upload-keystore.jks\n' \
+            "$KEYSTORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > shell/android/key.properties
+          echo "release signing enabled"
+      - name: Analyze (informational)
+        run: cd shell && flutter pub get && (flutter analyze --no-fatal-infos --no-fatal-warnings || true)
+      - name: Generate icon and splash
+        run: |
+          cd shell
+          dart run flutter_launcher_icons
+          dart run flutter_native_splash:create
+      - name: Build APK
+        run: |
+          cd shell
+          flutter build apk --release --split-per-abi \
+            --obfuscate --split-debug-info=build/symbols \
+            --build-number=${{ github.run_number }}
+          ls -la build/app/outputs/flutter-apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omid-apk-arm64
+          path: shell/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omid-apk-armv7-old-phones
+          path: shell/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omid-symbols
+          path: shell/build/symbols
