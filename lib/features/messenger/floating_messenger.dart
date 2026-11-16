@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:record/record.dart';
 import '../../core/api_client.dart';
 import '../../core/auth_store.dart';
 import '../../core/jalali.dart';
@@ -42,7 +41,6 @@ class _FloatingMessengerLayerState extends ConsumerState<FloatingMessengerLayer>
   bool _faded = false;
   bool _loading = false;
   bool _sending = false;
-  bool _recording = false;
   bool _loadedOnce = false;
   String? _error;
   String? _selectedStudentId;
@@ -55,7 +53,6 @@ class _FloatingMessengerLayerState extends ConsumerState<FloatingMessengerLayer>
   int _requestEpoch = 0;
   final _text = TextEditingController();
   final _scroll = ScrollController();
-  final _recorder = AudioRecorder();
   late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200))..repeat();
 
   bool get _isAdmin => ref.read(authProvider)?.isAdmin == true;
@@ -83,7 +80,6 @@ class _FloatingMessengerLayerState extends ConsumerState<FloatingMessengerLayer>
     _pulse.dispose();
     _text.dispose();
     _scroll.dispose();
-    _recorder.dispose();
     super.dispose();
   }
 
@@ -234,42 +230,6 @@ class _FloatingMessengerLayerState extends ConsumerState<FloatingMessengerLayer>
     }
   }
 
-  Future<void> _toggleRecording() async {
-    if (_sending || (_isAdmin && _selectedStudentId == null)) return;
-    if (_recording) {
-      String? path;
-      try {
-        path = await _recorder.stop();
-      } catch (_) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ذخیره‌ی ویس ممکن نشد')));
-      }
-      if (mounted) setState(() => _recording = false);
-      if (path != null && path.isNotEmpty) {
-        try {
-          await _sendAttachment(path, 'audio', 'voice-${DateTime.now().millisecondsSinceEpoch}.m4a', 'audio/mp4');
-        } finally {
-          try { await File(path).delete(); } catch (_) {}
-        }
-      }
-      return;
-    }
-    try {
-      if (!await _recorder.hasPermission()) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('برای ضبط ویس، مجوز میکروفون لازم است')));
-        return;
-      }
-      final dir = await getTemporaryDirectory();
-      final path = '${dir.path}/omid-voice-${DateTime.now().millisecondsSinceEpoch}.m4a';
-      await _recorder.start(
-        const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 96000, sampleRate: 44100),
-        path: path,
-      );
-      if (mounted) setState(() => _recording = true);
-    } catch (_) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('شروع ضبط ویس ممکن نشد')));
-    }
-  }
-
   Future<void> _sendWeeklyReport() async {
     if (_sending) return;
     setState(() => _sending = true);
@@ -306,15 +266,11 @@ class _FloatingMessengerLayerState extends ConsumerState<FloatingMessengerLayer>
           (next == null || previous.role != next.role || previous.studentId != next.studentId);
       if (!accountChanged) return;
       _requestEpoch++;
-      if (_recording) {
-        unawaited(_recorder.stop().catchError((Object _) => null));
-      }
       MessengerLauncher.open.value = false;
       _text.clear();
       if (mounted) {
         setState(() {
           _expanded = false;
-          _recording = false;
           _selectedStudentId = null;
           _selectedStudentName = '';
           _threads = [];
@@ -557,8 +513,6 @@ class _FloatingMessengerLayerState extends ConsumerState<FloatingMessengerLayer>
         decoration: const BoxDecoration(color: Color(0xFF201B1D), border: Border(top: BorderSide(color: T.line))),
         child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
           _composerButton(Icons.add_photo_alternate_rounded, 'ارسال عکس', _sending ? null : _pickImage),
-          _composerButton(_recording ? Icons.stop_circle_rounded : Icons.mic_rounded, _recording ? 'توقف و ارسال ویس' : 'ضبط ویس', _sending ? null : _toggleRecording,
-              color: _recording ? T.bad : T.tx2),
           Expanded(
             child: Container(
               constraints: const BoxConstraints(minHeight: 42, maxHeight: 88),
